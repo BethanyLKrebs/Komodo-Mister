@@ -1,0 +1,544 @@
+#include "pitches.h"
+#include "Wire.h"
+#define DS3231_I2C_ADDRESS 0x68
+
+//#define DEBUG 1
+#undef DEBUG
+
+//MODE AND ALARM VARIABLES 
+bool alarm_2_set = false;
+
+
+bool alarm_2_fired = false;
+
+//RANDOMIZING CODE
+int wakePin = 2; // pin used for waking up
+byte alarm_time ;
+byte bin_alarm_time;
+int alarm_fired=0;
+int time_now[2];
+int time_alarm1_set[2];
+int time_alarm2_set[2];
+int last_alarm[2];
+unsigned long ms_time = millis();
+int* timer_rand_int;
+
+//ALARM MASK BIT SETTING
+byte A1M1_mask = B00000000;
+byte A1M2_mask = B00000000;
+byte A1M3_mask = B00000000;
+byte A1M4_mask = 0x80;
+
+byte A2M2_mask = B00000000;
+byte A2M3_mask = B00000000;
+byte A2M4_mask = 0x80;
+
+void Alarm_2_Fired(){
+  :: alarm_2_fired = true;
+}
+
+//SOUND CODE
+// notes in the melody:, F sharp 7 is closest to resonant frequency of the buzzer
+// note durations: 4 = quarter note, 8 = eighth note, etc.:
+int noteDurations[] = {2,2};
+int melody[] = {NOTE_FS7, NOTE_FS7};
+void Play_Alarm(){
+    for (int thisNote = 0; thisNote < 2; thisNote++) {
+    // to calculate the note duration, take one second
+    // divided by the note type.
+    //e.g. quarter note = 1000 / 4, eighth note = 1000/8, etc.
+    int noteDuration = 1000 / noteDurations[thisNote];
+    tone(8, melody[thisNote], noteDuration);
+
+    // to distinguish the notes, set a minimum time between them.
+    // the note's duration + 30% seems to work well:
+    int pauseBetweenNotes = noteDuration * 1.30;
+    delay(pauseBetweenNotes);
+    // stop the tone playing:
+  noTone(8);
+  digitalWrite(8,LOW);
+  }
+} 
+
+int Flash_LED(int input_Pin){
+  for(int i = 0; i <15; i++){
+  int count = i;
+  digitalWrite(input_Pin,HIGH);
+  delay(500);
+  digitalWrite(input_Pin,LOW);
+  delay(500);
+  }
+}
+
+int random_pin;
+int random_LED;
+
+int Which_Relay(){
+  int return_pin;
+  int x = random(1,5);
+  Serial.println(x);
+  if(x ==1){
+    return_pin = 4;
+  }
+  if(x==2){
+    return_pin = 5;
+  }
+  if(x==3){
+    return_pin = 6;
+  }
+  if(x==4){
+    return_pin =7;
+  }
+  Serial.println(return_pin);
+  return return_pin;
+}
+int Which_LED(int rand_relay_pin){
+  int return_LED;
+  if(rand_relay_pin == 4){
+    return_LED = 9;
+  }
+  if(rand_relay_pin ==5){
+    return_LED = 10;
+  }
+  if(rand_relay_pin==6){
+    return_LED = 11;
+  }
+  if(rand_relay_pin==7){
+    return_LED = 12;
+  }
+  Serial.println(return_LED);
+  return return_LED;
+}
+
+// Convert normal decimal numbers to binary coded decimal
+byte decToBcd(byte val)
+{
+  return( (val/10*16) + (val%10) );
+}
+// Convert binary coded decimal to normal decimal numbers
+byte bcdToDec(byte val)
+{
+  return( (val/16*10) + (val%16) );
+}
+
+void setDS3231time(byte second, byte minute, byte hour, byte dayOfWeek, byte dayOfMonth, byte month, byte year){
+  // sets time and date data to DS3231
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0); // set next input to start at the seconds register
+  Wire.write(decToBcd(second)); // set seconds
+  Wire.write(decToBcd(minute)); // set minutes
+  Wire.write(decToBcd(hour)); // set hours
+  Wire.write(decToBcd(dayOfWeek)); // set day of week (1=Sunday, 7=Saturday)
+  Wire.write(decToBcd(dayOfMonth)); // set date (1 to 31)
+  Wire.write(decToBcd(month)); // set month
+  Wire.write(decToBcd(year)); // set year (0 to 99)
+  Wire.endTransmission();
+}
+
+void readDS3231time(byte *second,byte *minute,byte *hour,byte *dayOfWeek,byte *dayOfMonth,byte *month,byte *year){
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0); // set DS3231 register pointer to 00h
+  Wire.endTransmission();
+  Wire.requestFrom(DS3231_I2C_ADDRESS, 7);
+  // request seven bytes of data from DS3231 starting from register 00h
+  *second = bcdToDec(Wire.read() & 0x7f);
+  *minute = bcdToDec(Wire.read());
+  *hour = bcdToDec(Wire.read() & 0x3f);
+  *dayOfWeek = bcdToDec(Wire.read());
+  *dayOfMonth = bcdToDec(Wire.read());
+  *month = bcdToDec(Wire.read());
+  *year = bcdToDec(Wire.read());
+}
+
+
+void Time_Check(int time_now[]){
+  byte second,minute, hour, dayOfWeek, dayOfMonth, month, year;
+  readDS3231time(&second, &minute, &hour, &dayOfWeek, &dayOfMonth, &month, &year);
+  time_now[1] = minute;
+  time_now[0] = hour;
+}
+
+void displayTime(){
+  byte second, minute, hour, dayOfWeek, dayOfMonth, month, year;
+  // retrieve data from DS3231
+  readDS3231time(&second, &minute, &hour, &dayOfWeek, &dayOfMonth, &month,
+  &year);
+  // send it to the serial monitor
+  Serial.print(hour, DEC);
+  // convert the byte variable to a decimal number when displayed
+  Serial.print(":");
+  if (minute<10)
+  {
+    Serial.print("0");
+  }
+ Serial.print(minute, DEC);
+  Serial.print(":");
+  if (second<10)
+  {
+    Serial.print("0");
+  }
+  Serial.print(second, DEC);
+  Serial.print(" ");
+  Serial.print(dayOfMonth, DEC);
+  Serial.print("/");
+  Serial.print(month, DEC);
+  Serial.print("/");
+  Serial.println(year, DEC);
+//  Serial.print(" Day of week: ");
+ // switch(dayOfWeek){
+ // case 1:
+   // Serial.println("Sunday");
+    //break;
+ // case 2:
+//    Serial.println("Monday");
+//    break;
+  //case 3:
+//    Serial.println("Tuesday");
+//    break;
+//  case 4:
+//    Serial.println("Wednesday");
+//    break;
+//  case 5:
+//    Serial.println("Thursday");
+//    break;
+//  case 6:
+//    Serial.println("Friday");
+//    break;
+//  case 7:
+//    Serial.println("Saturday");
+//    break;
+//}
+}
+
+void SetAlarm2(byte input_minutes, byte input_hours){
+  //Set up to alarm when minutes match (on the hour), working 6/2/16 
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0xB); // Set Registry address to B
+                   //                    Bit 7     Bit 6     Bit 5     Bit 4     Bit 3     Bit 2     Bit 1     Bit 0
+                  // Address 0xB  A2M2 Mask Bit   10 Min    10 Min    10 Min    1 Min     1 Min     1 Min     1 Min
+                  // Address 0xC  A2M3 Mask Bit   12/24    AM/PM or10Hr* 10 Hr   1 Hours   1 Hours   1 Hours   1 Hours  (*Depends on Bit 6 value)
+                  // Address 0XD  A2M4 Mask Bit   DY/DT   10 Date     10 Date   Day/Date*  Day/Date*  Day/Date*  Day/Date*  (*Depends on Bit 6 value)
+
+                  //Mask Bits Alarm 2           DY/DT       A2M4        A2M3      A2M2
+                  //Alarm once per min            X         1           1         1
+                  //Alarm when mins match         X         1           1         0
+                  //Alarm when hours/mins match   X         1           0         0
+                  //Alarm when dates/hrs/mins     0         0           0         0
+                  //Alarm when day/hrs/mins       1         0           0         0
+  byte alarm2_mins = A2M2_mask | input_minutes;                 
+  Wire.write(alarm2_mins); // Write minutes alarm to A2M2
+  Serial.println("Alarm 2 minutes set");
+  Serial.println(alarm2_mins,BIN);
+  byte alarm2_hours = A2M3_mask | input_hours;
+  Wire.write(alarm2_hours); // Write A2M3 alarm registry (0x80 writes bit 8 to 1 for the mask bit to set the alarm and sets bit 6 (12/24) to 0 for 24 hour time.
+  Serial.println(alarm2_hours,BIN);
+  byte alarm2_date = A2M4_mask;// When bit 6 is 0, bits 4 and 5 are the 10 hour bits (4 = 1, 5 =2).  When bit 6 is 1, bit 5 is the AM/PM with 1 = PM
+  Wire.write(alarm2_date); 
+  Serial.println(alarm2_date,BIN);// Write A2M4 alarm registry (0xC0 writes in mask bit and DY/DT which indicates day of week (DY/DT = 0) or date of month (DY/DT = 1)
+  Wire.endTransmission();
+  
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0xE); //Sets Registry to control register (0xE)
+  Wire.requestFrom(DS3231_I2C_ADDRESS, 1);
+  byte ctrl = Wire.read(); //Reads current settings of control registry in variable 'ctrl'
+  Wire.endTransmission();
+  
+  Serial.print("ctrl read:");
+  Serial.print(ctrl,BIN);
+  ctrl = (ctrl & ~0x07 ) | 0x46; // Bitwise evaluate ctrl value and not 111 (clear INTCN, A2IE, A1IE)
+                                 // Bitwise OR in 01000110 (BBSQW = 1, whatever default settings on bits 3-5 are, INTCN =1, A2IE = 0, A1IE =1).
+                                //BBSQW =1 enables battery power interrupt, INTCN needs to be set to 1 to enable alarm interrupt, A2IE and A1IE enable interrupt for alarms 2 & 1 respectively
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0x0E); //Begins transmission to control register
+  Wire.write(ctrl); //Writes ctrl variable to control register
+  Wire.endTransmission();
+  Serial.println("Ctrl written:");
+  Serial.println(ctrl,BIN);
+
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0xF); //Begins transmission to status register
+  Wire.requestFrom(DS3231_I2C_ADDRESS, 1); //Request 1 byte from device at address
+  byte stat = Wire.read(); //Read status register into stat variable
+  Wire.endTransmission();
+  Serial.print("stat read:");
+  Serial.println(stat,BIN);
+  
+  stat &= ~0x3; //Clear last two bits, A2F(bit 1) and A1F (bit 0), which are the alarm flag bits for alarms 2 and 1 respectively
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0x0F); //Begin transmission to status register
+  Wire.write(stat); //Write variable stat to status register
+  Wire.endTransmission();
+  
+}
+
+void clearStat(){
+    Wire.beginTransmission(DS3231_I2C_ADDRESS);
+    Wire.write(0xF); //Begins transmission to status register
+    Wire.requestFrom(DS3231_I2C_ADDRESS, 1); //Request 1 byte from device at address
+    byte stat = Wire.read(); //Read status register into stat variable
+    Wire.endTransmission();
+    Serial.print("stat read:");
+    Serial.println(stat,BIN);
+  
+    stat &= ~0x3; //Clear last two bits, A2F(bit 1) and A1F (bit 0), which are the alarm flag bits for alarms 2 and 1 respectively
+    Wire.beginTransmission(DS3231_I2C_ADDRESS);
+    Wire.write(0x0F); //Begin transmission to status register
+    Wire.write(stat); //Write variable stat to status register
+    Wire.endTransmission();
+}
+
+int Random_time_generator(int rand_array[]) {
+    int x=random(1,240); //Change this before running
+    Serial.print("Random number is: ");
+    Serial.println(x);
+    delay(500);
+  while(x%60 ==0){
+    x=random(1,3);  //Change this before running
+  }
+  if(x > 60){
+    int hours = x/60;
+    int mins = x % 60;
+    rand_array[0]=hours;
+    rand_array[1] = mins;
+  }else{
+    int hours = 0;
+    int mins = x%60;
+    rand_array[0] = hours;
+    rand_array[1] = mins;
+  }
+ }
+ 
+   
+ 
+ void CheckAlarmTime(int current_time[], int al_time_1[], int al_time_2[], bool alarm_params[]){
+   // Check previous alarm set times to make sure during the last alarm cycle they were not jumped over.  Alarm_params is an array of boolean, index 0 is alarm 1 status, index 1 is alarm 2 status
+   //Alarm1 compare times - if current time hours are larger than the alarm 1 hours or the current time hours are equal and the current time minutes are greater than alarm 1, and not so for alarm to change alarm1 param to true
+   if(((current_time[0] > al_time_1[0] ) | (current_time[0] == al_time_1[0] & current_time[1] >= al_time_1[1])) & !((current_time[0] > al_time_2[0]) | (current_time[0] == al_time_2[0] & current_time[1] >= al_time_2[1]))){
+     alarm_params[0] = true;
+   }
+   //Alarm 2 compare times
+   if(((current_time[0] > al_time_2[0]) | (current_time[0] == al_time_2[0] & current_time[1] >= al_time_2[1])) &!((current_time[0] > al_time_1[0] ) | (current_time[0] == al_time_1[0] & current_time[1] >= al_time_1[1]))){
+     alarm_params[1] = true;
+   }
+   //If both alarms have been passed over, change both parameters to true
+   if(((current_time[0] > al_time_1[0] ) | (current_time[0] == al_time_1[0] & current_time[1] >= al_time_1[1])) & ((current_time[0] > al_time_2[0]) | (current_time[0] == al_time_2[0] & current_time[1] >= al_time_2[1]))){
+     alarm_params[0] = true;
+     alarm_params[1] = true;
+   }
+ }
+
+typedef enum {
+  S_IDLE,
+  S_ALARM2_SET,
+  S_ALARM2_FIRED,
+  S_BUZZER_SOUNDED,
+  S_SHOWER_RAN,
+  S_INVALID
+} state_t;
+
+state_t shower_state = S_IDLE;
+
+ void Set_Shower_State(){
+  state_t n_state = S_INVALID; 
+  #ifdef DEBUG
+     :: A2M2_mask = 0x80;
+     :: A2M3_mask = 0x80;
+     :: A2M4_mask = 0x80;
+  #else
+  :: A2M2_mask = B00000000;
+  :: A2M3_mask = B00000000;
+  #endif
+  switch(shower_state){
+  case S_IDLE:
+    if(::alarm_2_set == false){   
+      Time_Check(time_now);
+      Serial.println("Hours now are: ");
+      Serial.print(time_now[1],DEC);
+      Serial.print("Minutes now are: ");
+      Serial.println(time_now[0],DEC);
+      delay(250);
+    int y[2];
+      Random_time_generator(y);
+      int hours_calc = y[0] + time_now[0];
+      int minutes_calc = y[1]+time_now[1];
+      int alarm2_hours_mode2 = hours_calc;
+      if (minutes_calc >= 60){
+        alarm2_hours_mode2 = alarm2_hours_mode2+1;
+        minutes_calc = minutes_calc%60;
+      }
+        int alarm2_minutes_mode2 = minutes_calc;
+      #ifdef DEBUG
+      Serial.println("Random time is ");
+      Serial.print(alarm2_hours_mode2);
+      Serial.print(":");
+      Serial.println(alarm2_minutes_mode2);
+      delay(250);
+      SetAlarm2(0,0);
+      alarm_2_set == true;
+      n_state = S_ALARM2_SET;
+      break;
+  #else
+      byte bin_alarm_hours = decToBcd(alarm2_hours_mode2);
+      byte bin_alarm_mins = decToBcd(alarm2_minutes_mode2);
+      SetAlarm2(bin_alarm_mins,bin_alarm_hours);
+      :: alarm_2_set == true;
+      n_state = S_ALARM2_SET;
+    Serial.println("Alarm Set, IDLE mode!");
+    delay(500);
+    #endif
+    break;
+    }
+    if(:: alarm_2_set == true){
+      n_state = S_ALARM2_SET;  
+    break;
+    }
+   case S_ALARM2_SET:
+      if (:: alarm_2_fired) {
+        n_state = S_ALARM2_FIRED;
+    break;
+      } else {
+        n_state = S_ALARM2_SET;
+        Serial.println("Alarm 2 set, waiting...");
+        delay(250);
+    break;
+      }
+  case S_ALARM2_FIRED:
+    //If alarm has fired, check time, play audio cue, reset alarm to fire again in 1 minute, flash LEDs
+      if(::alarm_2_fired){
+            Serial.println("ALARM FIRED!");
+            clearStat();
+            // delay(750);
+            Time_Check(time_now); //Check current time
+            Play_Alarm();//Play audio cue
+            // lcd.print("Waiting ...");
+      delay(1000);
+      n_state = S_BUZZER_SOUNDED;
+      break;
+        } else{
+      n_state = S_ALARM2_FIRED;
+    break;
+    }
+  case S_BUZZER_SOUNDED:
+     if(::alarm_2_fired){
+    random_pin=Which_Relay();
+    Serial.print("Relay number ");
+    Serial.println(random_pin);
+    random_LED = Which_LED(random_pin);
+    Flash_LED(random_LED);
+    delay(1000);
+    digitalWrite(random_pin,HIGH);
+    clearStat();
+    Serial.println("Shower on");
+    Time_Check(time_now); //Check current time
+    int alarm2_minutes_mode2 = time_now[1]+3;
+    Serial.println(alarm2_minutes_mode2);
+    delay(300);
+    byte bin_alarm_minutes = decToBcd(alarm2_minutes_mode2);
+    :: A2M2_mask = B00000000;
+    :: A2M3_mask = B10000000;
+    SetAlarm2(bin_alarm_minutes,0);
+    ::alarm_2_fired = false;
+    n_state = S_SHOWER_RAN;
+    break;
+    }else{
+      n_state = S_BUZZER_SOUNDED;
+    break;
+    }
+  case S_SHOWER_RAN:
+    if(:: alarm_2_fired){
+      digitalWrite(random_pin,LOW);
+      clearStat();
+      Time_Check(time_now);
+      int y[2];
+      Random_time_generator(y);
+      int hours_calc = y[0] + time_now[0];
+      int minutes_calc = y[1]+time_now[1];
+      int alarm2_hours_mode2 = hours_calc;
+      if (minutes_calc > 60){
+        alarm2_hours_mode2 = alarm2_hours_mode2+1;
+        minutes_calc = minutes_calc-60;
+      }
+      int alarm2_minutes_mode2 = minutes_calc;
+      #ifdef DEBUG
+      Serial.println("Random time is ");
+      Serial.print(alarm2_hours_mode2);
+      Serial.print(":");
+      Serial.println(alarm2_minutes_mode2);
+      delay(250);
+      SetAlarm2(0,0);
+      ::alarm_2_set == true;
+      n_state = S_ALARM2_SET;
+      byte bin_alarm_hours = decToBcd(alarm2_hours_mode2);
+      byte bin_alarm_mins = decToBcd(alarm2_minutes_mode2);    
+      #else
+      alarm2_minutes_mode2 = y[1]+time_now[1];
+      alarm2_hours_mode2 = y[0]+time_now[0];
+      byte bin_alarm_hours = decToBcd(alarm2_hours_mode2);
+      byte bin_alarm_mins = decToBcd(alarm2_minutes_mode2);
+      :: A2M2_mask = B00000000;
+    :: A2M3_mask = B00000000;
+      SetAlarm2(bin_alarm_mins,bin_alarm_hours);
+      ::alarm_2_set == true;
+      n_state = S_ALARM2_SET;
+      Serial.println("Alarm Set, Shower Ran, Going Back to Alarm Set");
+      delay(500);
+      #endif
+    Serial.println("Random time is ");
+      Serial.print(alarm2_hours_mode2);
+      Serial.print(":");
+      Serial.println(alarm2_minutes_mode2);
+      delay(250);
+      SetAlarm2(bin_alarm_mins,bin_alarm_hours);
+      ::alarm_2_set = true;
+      ::alarm_2_fired = false;
+    break;
+    }else{
+      n_state = S_SHOWER_RAN;
+    break;
+    }
+  case S_INVALID:
+      Serial.println("Invalid state!");
+      alarm_2_fired = false;
+      alarm_2_set = false;
+      clearStat();
+      n_state= S_IDLE;
+      #ifdef DEBUG
+      A2M2_mask = 0x80;
+      A2M3_mask = 0x80;
+      A2M4_mask = 0x80;
+      SetAlarm2(decToBcd(0),decToBcd(0));
+      #else      
+      A2M2_mask = B00000000;
+      A2M3_mask = B00000000;
+      A2M4_mask = 0x80;
+      #endif
+      break;
+ 
+}
+  shower_state = n_state;
+}
+
+
+void setup() {
+  pinMode(4,OUTPUT); //Relay Connected at pin 4
+  pinMode(5,OUTPUT); //Relay Connected at pin 5
+  pinMode(6,OUTPUT); //Relay Connected at pin 6
+  pinMode(7,OUTPUT); //Relay connected at pin 7
+  pinMode(9, OUTPUT);  //LED for relay 4
+  pinMode(10,OUTPUT); //LED for relay 5
+  pinMode(11,OUTPUT); //LED for relay 6
+  pinMode(12,OUTPUT); //LED for relay 7
+  randomSeed(analogRead(0)); 
+  Wire.begin();
+  setDS3231time(01,35,14,4,22,3,17);
+  Serial.begin(9600);
+  Serial.println("Set up complete!");
+  delay(750);
+}
+
+void loop() {
+  attachInterrupt(digitalPinToInterrupt(2),Alarm_2_Fired,CHANGE); //ATTACH INTERRUPT FOR ALARM HERE
+  displayTime();
+  Set_Shower_State();
+  
+}
